@@ -261,3 +261,19 @@ def iou(boxA,boxB):
     boxBArea = (boxB[:,2]) * (boxB[:,3]) 
     iou = interArea / (boxAArea + boxBArea - interArea)
     return iou
+
+## IOU en numpy
+def getBB_area(bb):
+    IntersectionArea = (bb[:,2] - bb[:,0])*(bb[:,3] - bb[:,1])
+    return IntersectionArea
+
+def getIUO(bb1, bb2):
+    intersection_bb = np.array([np.vstack([bb1[:,0], bb2[:,0]]).max(axis=0),
+        np.vstack([bb1[:,1], bb2[:,1]]).max(axis=0),
+        np.vstack([bb1[:,2], bb2[:,2]]).min(axis=0),
+        np.vstack([bb1[:,3], bb2[:,3]]).min(axis=0)]).T
+    no_intersec = 1*(intersection_bb[:,3]-intersection_bb[:,1]>0)*(intersection_bb[:,2]-intersection_bb[:,0]>0)
+    intersection_bb = (intersection_bb.T * no_intersec).T
+    IntersectionArea = no_intersec*getBB_area(intersection_bb)
+    IOU = IntersectionArea/(getBB_area(bb1) + getBB_area(bb2) - IntersectionArea)
+    return IOU, intersection_bb
