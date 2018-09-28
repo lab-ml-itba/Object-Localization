@@ -137,7 +137,7 @@ def plot_sample_class(class_index, annotations_dict, synset_dict, data_folder):
 from  keras.utils import Sequence
 from keras.preprocessing.image import ImageDataGenerator
 class GeneratorMultipleOutputs(Sequence):
-    def __init__(self, annotations_dict, folder, batch_size, flip = 'no_flip', get_filenames = False):
+    def __init__(self, annotations_dict, folder, batch_size, flip = 'no_flip', featurewise_center=True, get_filenames = False):
         # flip = {no_flip, always, random}
         self.flip = flip
         self.get_filenames = get_filenames
@@ -159,26 +159,34 @@ class GeneratorMultipleOutputs(Sequence):
         if self.generator.batch_index == 0:
             batch_index = self.__len__()
         batch_filenames = np.array(self.generator.filenames)[self.generator.index_array][(batch_index-1)*self.generator.batch_size:batch_index*self.generator.batch_size]
-        #print(self.generator.batch_index, self.generator.total_batches_seen, len(batch_filenames), batch_index)
+        annot_dicts = []
+        box_widths = []
+        box_heights = []
+        centerXs = []
+        centerYs = []
         for filename in batch_filenames:
             arr = filename.split('/')
             class_id = arr[0]
             image_idx = arr[1].split('.')[0]
-            # print(filename, class_id, image_idx)
-            bboxes.append(self.annotations_dict[class_id][image_idx]['bounding_boxes'][0])
-        bboxes = np.array(bboxes)
-        img_width = self.annotations_dict[class_id][image_idx]['width']
-        img_height = self.annotations_dict[class_id][image_idx]['height']
-        box_width = bboxes[:,2]-bboxes[:,0]
-        box_height = bboxes[:,3]-bboxes[:,1]
-        centerX = (bboxes[:,0]+(box_width)/2)/img_width
-        centerY = (bboxes[:,1]+(box_height)/2)/img_height
-        return centerX, centerY, box_width/img_width, box_height/img_height, batch_filenames
+            annot_dict = self.annotations_dict[class_id][image_idx]
+            img_width = annot_dict['width']
+            img_height = annot_dict['height']
+            bounding_box = annot_dict['bounding_boxes'][0]
+            box_width = (bounding_box[2]-bounding_box[0])
+            box_height = (bounding_box[3]-bounding_box[1])
+            centerX = (bounding_box[0]+(box_width)/2)/img_width
+            centerY = (bounding_box[1]+(box_height)/2)/img_height
+            box_widths.append(box_width/img_width)
+            box_heights.append(box_height/img_height)
+            centerXs.append(centerX)
+            centerYs.append(centerY)
+            annot_dicts.append(annot_dict)
+        return np.array(centerXs), np.array(centerYs), np.array(box_widths), np.array(box_heights), batch_filenames, annot_dicts
     def __len__(self):
         return int(np.ceil(self.generator.samples / float(self.generator.batch_size)))
     def __getitem__(self, idx):
         data = next(self.generator)
-        centerX, centerY, width, height, batch_filenames = self.get_image_object_center()
+        centerX, centerY, width, height, batch_filenames, annot_dicts = self.get_image_object_center()
         if self.flip == 'random':
             inices_to_flip = np.random.randint(0, 2, data[0].shape[0]).nonzero()
             data[0][inices_to_flip] = np.flip(data[0][inices_to_flip], axis = 2)
@@ -187,7 +195,7 @@ class GeneratorMultipleOutputs(Sequence):
             data[0][:] = np.flip(data[0][:], axis = 2)
             centerX = 1 - centerX
         if self.get_filenames:
-            return (data[0], [data[1], np.array([centerX, centerY, width, height]).T], batch_filenames)
+            return (data[0], [data[1], np.array([centerX, centerY, width, height]).T], batch_filenames, annot_dicts)
         else:    
             return (data[0], [data[1], np.array([centerX, centerY, width, height]).T])
     def __next__(self):
@@ -195,11 +203,38 @@ class GeneratorMultipleOutputs(Sequence):
     def __iter__(self):
         return self
     
+def plot_batch(generator, count = 10):
+    batch = next(generator)
+    images_batch = batch[0]
+    bounding_boxes_norm = batch[1][1]
+    bounding_boxes = np.array([bounding_boxes_norm[:,0] - bounding_boxes_norm[:,2]/2, 
+                               bounding_boxes_norm[:,1] - bounding_boxes_norm[:,3]/2,
+                               bounding_boxes_norm[:,0] + bounding_boxes_norm[:,2]/2, 
+                               bounding_boxes_norm[:,1] + bounding_boxes_norm[:,3]/2,]).T
+    for image_index in range(count):
+        if len(batch) == 4:
+            print(batch[3][image_index])
+        f, ax = plt.subplots(1,1)
+        ax.imshow(images_batch[image_index])
+        im_w = images_batch[image_index].shape[1]
+        im_h = images_batch[image_index].shape[0]
+        bounding_box = bounding_boxes[image_index]
+        bounding_box[0] = bounding_box[0]*im_w
+        bounding_box[2] = bounding_box[2]*im_w
+        bounding_box[1] = bounding_box[1]*im_h
+        bounding_box[3] = bounding_box[3]*im_h
+        rect_gt = patches.Rectangle(bounding_box[:2],
+                                        (bounding_box[2]-bounding_box[0]),
+                                        (bounding_box[3]-bounding_box[1]),
+                                        linewidth=2, edgecolor='r',facecolor='none')
+        ax.add_patch(rect_gt)
+        plt.show()
 ### Conv Models ########
 
 from keras.layers import Activation, Dropout, Dense, Input, BatchNormalization
-from keras.layers import Conv2D, MaxPooling2D, GlobalAveragePooling2D
+from keras.layers import Conv2D, MaxPooling2D, GlobalAveragePooling2D, Concatenate, GlobalMaxPooling2D, Flatten
 from keras.models import Model
+from keras.constraints import max_norm
 
 def get_conv_layer(x, filters = 32, filter_size = (3,3), pool_size=(2,2)):
     conv = Conv2D(filters, filter_size)(x)
@@ -222,14 +257,78 @@ def get_simple_model_common_part(input_shape=(375, 500, 3)):
     l5 = get_conv_layer(l4, filters = 512, filter_size = (3,3), pool_size=(2,2))
 
     GAP = GlobalAveragePooling2D()(l5)
-    last_layer = Dropout(0.25)(GAP)
-    return last_layer, x
+    model = Model(x, GAP)
+    return model
 
-def get_simple_model(input_shape=(375, 500, 3), n_classes=5):
-    last_layer, input_layer = get_simple_model_common_part(input_shape=input_shape)
-    classification = Dense(n_classes, activation='softmax', name='category_output')(last_layer) #kernel_constraint=max_norm(2.)
-    bounding_box = Dense(4, name='bounding_box')(last_layer)
-    model = Model(inputs=input_layer, outputs=[classification, bounding_box])
+def get_simple_model(input_shape=(375, 500, 3), n_classes=5, dropout_rate_1 = 0.5, dropout_rate_2 = 0.1):
+    base_model = get_simple_model_common_part(input_shape=input_shape)
+    classification = Dense(n_classes, activation='softmax', name='category_output', kernel_constraint=max_norm(1.))(Dropout(dropout_rate_1)(base_model.output))
+    bounding_box = Dense(4, name='bounding_box', kernel_constraint=max_norm(2.))(Dropout(dropout_rate_2)(base_model.output))
+    model = Model(inputs=base_model.input, outputs=[classification, bounding_box])
+    return model
+
+def get_concat_model(input_shape=(375, 500, 3), n_classes=5, dropout_rate_1 = 0.5, dropout_rate_2 = 0.25):
+    base_model = get_simple_model_common_part(input_shape=input_shape)
+    classification = Dense(n_classes, activation='softmax', name='category_output', kernel_constraint=max_norm(1.))(Dropout(dropout_rate_1)(base_model.output)) #
+    concat_layer = Concatenate()([base_model.output, GlobalMaxPooling2D()(base_model.layers[4].output)])
+    bounding_box = Dense(4, name='bounding_box', kernel_constraint=max_norm(2.))(Dropout(dropout_rate_2)(concat_layer))
+    model = Model(inputs=base_model.input, outputs=[classification, bounding_box])
+    return model
+
+from keras.applications.vgg16 import VGG16
+def get_VGG16(n_classes = 5, dropout_rate_1 = 0.5, dropout_rate_2 = 0.25, N_trainable = 19):
+    modelVGG16 = VGG16(include_top=False, weights='imagenet')
+    GAP = GlobalAveragePooling2D()(modelVGG16.output)
+    classification = Dense(n_classes, 
+                           activation='softmax', 
+                           name='category_output', 
+                           kernel_constraint=max_norm(1.))(Dropout(dropout_rate_1)(GAP))
+    bounding_box = Dense(4, 
+                         name='bounding_box', 
+                         kernel_constraint=max_norm(2.))(Dropout(dropout_rate_2)(GAP))
+    model = Model(inputs=modelVGG16.input, outputs=[classification, bounding_box])
+    for layer in model.layers[N_trainable:]:
+        layer.trainable = True
+    for layer in model.layers[:N_trainable]:
+        layer.trainable = False
+    return model
+
+def get_VGG16_concat(n_classes = 5, dropout_rate_1 = 0.5, dropout_rate_2 = 0.25, N_trainable = 19):
+    modelVGG16 = VGG16(include_top=False, weights='imagenet')
+    GAP = GlobalAveragePooling2D()(modelVGG16.output)
+    classification = Dense(n_classes, 
+                           activation='softmax', 
+                           name='category_output', 
+                           kernel_constraint=max_norm(1.))(Dropout(dropout_rate_1)(GAP))
+    concat_layer = Concatenate()([GAP, GlobalMaxPooling2D()(modelVGG16.layers[1].output)])
+    bounding_box = Dense(4, 
+                         name='bounding_box', 
+                         kernel_constraint=max_norm(2.))(Dropout(dropout_rate_2)(concat_layer))
+    model = Model(inputs=modelVGG16.input, outputs=[classification, bounding_box])
+    for layer in model.layers[N_trainable:]:
+        layer.trainable = True
+    for layer in model.layers[:N_trainable]:
+        layer.trainable = False
+    return model
+
+def get_VGG16_concat_dense(input_shape=(375, 500, 3), n_classes = 5, dropout_rate_1 = 0.5, dropout_rate_2 = 0.25, N_trainable = 19):
+    modelVGG16 = VGG16(include_top=False, weights='imagenet', input_shape=input_shape)
+    x = Flatten(name='flatten')(modelVGG16.output)
+    x = Dense(64, activation='relu', name='fc1')(x)
+    x = Dense(64, activation='relu', name='fc2')(x)
+    classification = Dense(n_classes, 
+                           activation='softmax', 
+                           name='category_output', 
+                           kernel_constraint=max_norm(1.))(Dropout(dropout_rate_1)(x))
+    concat_layer = Concatenate()([x, GlobalMaxPooling2D()(modelVGG16.layers[1].output)])
+    bounding_box = Dense(4, 
+                         name='bounding_box', 
+                         kernel_constraint=max_norm(2.))(Dropout(dropout_rate_2)(concat_layer))
+    model = Model(inputs=modelVGG16.input, outputs=[classification, bounding_box])
+    for layer in model.layers[N_trainable:]:
+        layer.trainable = True
+    for layer in model.layers[:N_trainable]:
+        layer.trainable = False
     return model
 
 #### Custom metrics
@@ -261,6 +360,13 @@ def iou(boxA,boxB):
     boxBArea = (boxB[:,2]) * (boxB[:,3]) 
     iou = interArea / (boxAArea + boxBArea - interArea)
     return iou
+
+def IOU_loss(boxA,boxB):
+    iou_ = iou(boxA,boxB)
+    #iou_ = K.max(K.stack([iou_, 0.00001 * K.ones_like(iou_)]), axis=0)
+    #return -K.log(iou_)
+    return K.ones_like(iou_)-iou_
+    
 
 ## IOU en numpy
 def getBB_area(bb):

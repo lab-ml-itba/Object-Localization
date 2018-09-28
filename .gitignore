@@ -3,3 +3,10 @@ reduced_dataset/
 dataset/
 .ipynb_checkpoints/
 *.hdf5
+VOCdevkit/
+dataset_2_classes/
+dataset_5_classes/
+top_100/
+dataset_2_dogs/
+dataset_5_classes_plus_world/
+reduced_dataset_2/
