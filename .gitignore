@@ -1,3 +1,7 @@
+challenge_dataset/
+COCO/cocoapi/
+COCO/coco_dataset/
+COCO/annotations/
 __pycache__/
 reduced_dataset/
 dataset/
@@ -10,3 +14,5 @@ top_100/
 dataset_2_dogs/
 dataset_5_classes_plus_world/
 reduced_dataset_2/
+COCO/train2017/
+COCO/val2017/
